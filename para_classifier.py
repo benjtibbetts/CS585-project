@@ -12,15 +12,35 @@ import numpy as np
 import random
 import time
 import math
+import nltk
 from matplotlib import pyplot as plt
 from collections import defaultdict
 from collections import Counter
 from sklearn import svm
+from gensim import corpora, models, similarities
+from collections import defaultdict
+from nltk import Tree
+from nltk.stem import WordNetLemmatizer
 
 para_label = ["(3, 2)","(4, 1)","(5, 0)"]
 nonpara_label = ["(1, 4)", "(0, 5)"]
-N_V_tags = ["nn", "nns", "vb", "vbd", "vbg", "vbn", "vbp", "vbz"]
+N_tags = ["nn", "nns", "nnp", "nnps", "prp"]
+V_tags = ["vb", "vbd", "vbg", "vbn", "vbp", "vbz", "md"]
 
+bad_POS = ["uh", "sym", "rp", "fw", "ls", "wrb", "$", "pdt", 
+"ht", "url", "pos", ".", ":", "rt", "usr", "``", "o", ",", "none", "''", ")", "#", "("]
+
+test = []
+
+
+# change this to True if you want to get results for specific features
+# when running evaluate classifier
+sent = True
+pos = False
+stem = False
+length = False
+n_lemma = False
+v_lemma = True
 
 
 """
@@ -30,15 +50,13 @@ Also adds corresponding label of each pair of tweet to target list,
 used for y value of classifier.
 """
 def construct_dataset(train=True):
-	features = []
 	target = []
+	features = []
 
 	if train == True:
 		path = "train.data"
 	else:
 		path = "test.data"
-
-	data = []
 
 	with open(path, 'rb') as csv_file:
 	    csv_reader = csv.reader(csv_file, delimiter='\t')
@@ -50,6 +68,9 @@ def construct_dataset(train=True):
 	    	label = row[4]
 	    	sent1_tag = row[5]
 	    	sent2_tag = row[6]
+	    	if train==False:
+	    		test.append((sent1, sent2, label))
+
 
 	    	if train == True:
 		    	if label in para_label:
@@ -81,6 +102,11 @@ Adds feature vector to a global list of features.
 def fill_featlist(features, sent1, sent2, sent1_tag, sent2_tag, label, topic):
 	feat = {}
 
+	sent1_lemmatized_nouns = []
+	sent1_lemmatized_verbs = []
+	sent2_lemmatized_verbs = []
+	sent2_lemmatized_nouns = []
+
 	sent1_no_topic = removeTopic(topic, sent1)
 	sent2_no_topic = removeTopic(topic, sent2)
 
@@ -90,15 +116,112 @@ def fill_featlist(features, sent1, sent2, sent1_tag, sent2_tag, label, topic):
 	sent1_pos = getPOS(tokenize(sent1_tag))
 	sent2_pos = getPOS(tokenize(sent2_tag))
 
+
+	pos_for_tree1 = process_POS(sent1_pos)
+	pos_for_tree2 = process_POS(sent2_pos)
+
+	grammar = nltk.CFG.fromstring("""
+		S -> NP VP | EX VP
+		S -> S CC S
+		CP -> P S 
+		VP -> Vbar
+		Vbar -> AdvP Vbar | Vbar PP | Vbar AdvP | V NP | V CP | V | TO Vbar | MD Vbar 
+		NP -> D Nbar | Nbar
+		Nbar -> AdjP Nbar | Nbar PP | N PP | N | N N
+		PP -> AdjP Pbar | Pbar PP | P NP
+		AdjP -> AdvP Adjbar | Adjbar PP | Adjbar | Adj PP
+		N -> "nn" | "nns" | "nnp" | "nnps" | "wp" | "prp" | "wp" 
+		EX -> "ex"
+		V -> "vb" | "vbd" | "vbn" | "vbp" | "vbz" | "vbg"
+		Adj -> "jj" | "jjs" | "jjr" | "cd" | "prp$"
+		Adv -> "rb" | "rbr" | "rbs"
+		D -> "dt" | "wdt"
+		P -> "in"
+		TO -> "to"
+		MD -> "md"
+		CC -> "cc"
+
+		""")
+	'''
+
+	rd_parser = nltk.ChartParser(grammar)
+
+	sent1_trees = []
+	sent2_trees = []
+
+	for tree in rd_parser.parse(pos_for_tree1 ):
+		if tree.pformat() is not None:
+			flat = tree.pformat().split()
+			joined_flat = ' '.join(flat)
+			sent1_trees.append(joined_flat)
+
+	for tree in rd_parser.parse(pos_for_tree2 ):
+		if tree.pformat() is not None:
+			flat = tree.pformat().split()
+			joined_flat = ' '.join(flat)
+			sent2_trees.append(joined_flat)
+
+	if len(sent1_trees) > 0 and len(sent2_trees) > 0:
+		good_tree1 = sent1_trees[0]
+		good_tree2 = sent1_trees[0]
+		sent1_tree_brackets = good_tree1.count(")")
+		sent2_tree_brackets = good_tree2.count(")")
+		print sent1_tree_brackets
+	else:
+		sent1_tree_brackets = 0
+		sent2_tree_brackets = 0
+
+	'''
 	stemmed_list1 = stemmer(sent1_list, sent1_pos)
 	stemmed_list2 = stemmer(sent1_list, sent1_pos)
 
-	feat["sent_cos"] = get_cosine(sent1_list, sent2_list)
-	feat["pos_cos"] = get_cosine(sent1_pos, sent2_pos)
-	feat["stem_cos"] = get_cosine(stemmed_list1, stemmed_list2)
-	feat["len_difference"] = abs(len(sent1_list) - len(sent2_list))
+	wordnet_lemmatizer = WordNetLemmatizer()
+
+	for i in range(len(sent1_list)):
+		if sent1_pos[i] in V_tags:
+			sent1_lemmatized_verbs.append(wordnet_lemmatizer.lemmatize(sent1_list[i], pos='v'))
+		if sent1_pos[i] in N_tags:
+			sent1_lemmatized_nouns.append(wordnet_lemmatizer.lemmatize(sent1_list[i], pos='n'))
+
+	for i in range(len(sent2_list)):
+		if sent2_pos[i] in V_tags:
+			sent2_lemmatized_verbs.append(wordnet_lemmatizer.lemmatize(sent2_list[i], pos='v'))
+		if sent2_pos[i] in N_tags:
+			sent2_lemmatized_nouns.append(wordnet_lemmatizer.lemmatize(sent2_list[i], pos='n'))
+
+	sent1_lemmatized_nouns = set(sent1_lemmatized_nouns)
+	sent2_lemmatized_nouns = set(sent2_lemmatized_nouns)
+	sent1_lemmatized_verbs = set(sent1_lemmatized_verbs)
+	sent2_lemmatized_verbs = set(sent2_lemmatized_verbs)
+
+	if sent:
+		feat["sent_cos"] = get_cosine(sent1_list, sent2_list)
+	if pos:
+		feat["pos_cos"] = get_cosine(sent1_pos, sent2_pos)
+	if stem:
+		feat["stem_cos"] = get_cosine(stemmed_list1, stemmed_list2)
+	if length:
+		feat["len_difference"] = abs(len(sent1_list) - len(sent2_list))
+		# feat["syn_similarity"] = abs(sent1_tree_brackets - sent2_tree_brackets)
+	if n_lemma:
+		feat["lemmatized_noun_overlap"] = len(sent2_lemmatized_nouns.intersection(sent1_lemmatized_nouns))
+	if v_lemma:
+		feat["lemmatized_verb_overlap"] = len(sent2_lemmatized_verbs.intersection(sent1_lemmatized_verbs))
+
 
 	features.append(feat)
+
+"""
+Takes a list of POS as input and removes the tags that our parser can't handle
+such as interjections and wh-words.
+"""
+def process_POS(pos):
+	new_list = []
+	for p in pos:
+		if p not in bad_POS:
+			new_list.append(p)
+	return new_list
+
 
 """
 Gets the POS tag for each word in a tokenized sentence.
@@ -124,11 +247,20 @@ st = LancasterStemmer()
 
 def stemmer(sent, POS):
 	for i in range(len(sent)):
-		if POS[i] in N_V_tags:
+		if POS[i] in N_tags or V_tags:
 			sent[i] = st.stem(sent[i])
 
 	return sent
 
+
+wordnet_lemmatizer = WordNetLemmatizer()
+
+
+"""
+given a word and it's part of speech, lemmatize it
+"""
+def lemmatizer(word, pos):
+	word = wordnet_lemmatizer.lemmatize(word,)
 
 
 """
@@ -165,9 +297,6 @@ def most_informative_feature_for_class_svm(vectorizer, classifier,  n=10):
     for coef, feat in topn:
         print feat, coef
 
-feats, target = construct_dataset()
-vec = DictVectorizer()
-X = vec.fit_transform(feats)
 
 """
 The following is mostly a test to make sure dataset is formatted correctly.
@@ -176,112 +305,48 @@ Gaussian Naive Bayes prediction of a paraphrase using only sentential cosine dis
 and cosine distance of part of speech tags, only on test data.
 
 """
+def evalueateGNB():
+	feats, target = construct_dataset()
+	vec = DictVectorizer()
+	X = vec.fit_transform(feats)
+	gnb = GaussianNB()
+	y_pred = gnb.fit(X.toarray(), target).predict(X.toarray())
 
-gnb = GaussianNB()
-y_pred = gnb.fit(X.toarray(), target).predict(X.toarray())
-
-print("Number of mislabeled points out of a total %d points : %d"
-	% (X.shape[0],(target != y_pred).sum()))
+	print("Number of mislabeled points out of a total %d points : %d"
+		% (X.shape[0],(target != y_pred).sum()))
 
 
 
 """
 Evaluation of performance on test set using MultinomialNB
 """
-test_feats, test_target = construct_dataset(train=False)
+def evaluateMNB():
+	feats, target = construct_dataset()
+	vec = DictVectorizer()
+	X = vec.fit_transform(feats)
+	test_feats, test_target = construct_dataset(train=False)
 
-clf = MultinomialNB().fit(X, target)
-test_vec = DictVectorizer()
-test_X = test_vec.fit_transform(test_feats)
+	clf = MultinomialNB().fit(X, target)
+	test_vec = DictVectorizer()
+	test_X = test_vec.fit_transform(test_feats)
 
-predicted = clf.predict(test_X)
-print np.mean(predicted == test_target)
+	predicted = clf.predict(test_X)
+	print np.mean(predicted == test_target)
 
 """
 Evaluation of performance on test set using linear SVM
-"""
-feats, target = construct_dataset()
-vec = DictVectorizer()
-X = vec.fit_transform(feats)
-
-test_feats, test_target = construct_dataset(train=False)
-test_vec = DictVectorizer()
-test_X = test_vec.fit_transform(test_feats)
-
-svm = svm.SVC(kernel='linear').fit(X, target)
-predicted = svm.predict(test_X)
-print np.mean(predicted == test_target)
-most_informative_feature_for_class_svm(vec, svm)
-
-
 
 """
-def make_feat_vec(sent1, sent2, sent1_tag, sent2_tag, label):
-	feat_vec = defaultdict(float)
-	for n in range(len(sent1) - 1):
-		for i in range(len(sent2) - 1):
-			feat_vec["str_%s_%s_%s" % (label, sent1[n], sent2[i])] = string_features(sent1[n], sent2[i])
-			feat_vec["pos_%s_%s_%s" % (label, sent1[n], sent2[i])] = pos_features(getPOS(sent1_tag[n]), getPOS(sent2_tag[i]))
+def evaluateSVM():
+	feats, target = construct_dataset()
+	vec = DictVectorizer()
+	X = vec.fit_transform(feats)
 
-	return feat_vec
+	test_feats, test_target = construct_dataset(train=False)
+	test_vec = DictVectorizer()
+	test_X = test_vec.fit_transform(test_feats)
 
-
-
-def create_sims(data_dict):
-	documents = []
-	documents.append(data_dict["sent1"])
-	stoplist = set('for a of the and to in'.split())
-	texts = [[word for word in document.lower().split() if word not in stoplist] for document in documents]
-	frequency = defaultdict(int)
-	for text in texts:
-		for token in text:
-			frequency[token] += 1
-
-	texts = [[token for token in tex if frequency[token] > 1] for text in texts]
-	dictionary = corpora.Dictionary(texts)
-	new_vec = dictionary.doc2bow(data_dict["sent2"].lower().split())
-	print new_vec
-	corpus = [dictionary.doc2bow(text) for text in texts]
-	tfidf = models.TfidfModel(corpus)
-	print tfidf[new_vec]
-
-data = construct_dataset()
-create_sims(data[0])
-dict_vectorizer = DictVectorizer()
-vectorized = dict_vectorizer.fit_transform(data)
-
-
-def create_vocab(train=True):
-	if train == True:
-		path = "train.data"
-	else:
-		path = "test.data"
-	vocab = []
-	with open(path, 'rb') as csv_file:
-	    csv_reader = csv.reader(csv_file, delimiter='\t')
-	    for row in csv_reader:
-	    	vocab.append(row[2])
-	    	vocab.append(row[3])
-	return vocab
-
-vectorizer = CountVectorizer()
-vocab = create_vocab()
-X = vectorizer.fit_transform(vocab)
-counts = X.toarray()
-
-transformer = TfidfTransformer()
-
-tfidf = transformer.fit_transform(counts)
-print tfidf
-
-def get_tfidf(sent1, sent2):
-	vocab = [sent1, sent2]
-	vectorizer = CountVectorizer(binary=True)
-	X = vectorizer.fit_transform(vocab)
-	counts = X.toarray()
-	transformer = TfidfTransformer()
-	tfidf = transformer.fit_transform(counts)
-	return tfidf.toarray()
-
-
-"""
+	svm = svm.SVC(kernel='linear').fit(X, target)
+	predicted = svm.predict(test_X)
+	print np.mean(predicted == test_target)
+	most_informative_feature_for_class_svm(vec, svm)
